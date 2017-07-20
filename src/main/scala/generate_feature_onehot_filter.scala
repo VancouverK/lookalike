@@ -62,11 +62,12 @@ object generate_feature_onehot_filter {
       feature_num = args(4).toInt
       println(sdf_time.format(new Date((System.currentTimeMillis()))) + "***********************feature_num=" + feature_num + "*****************************")
     }
-    val imei_onehotfeature_cyc = load_data()
+    val imei_onehotfeature_cyc = load_data_new()
     imei_onehotfeature_cyc.cache()
-    save_feature(table_out, imei_onehotfeature_cyc)//one-hot
+    save_feature(table_out, imei_onehotfeature_cyc)
+    //one-hot
     //filter by uxip_boot_users_cycle
-    val imei_onehotfeature_cyc_filter0 = imei_onehotfeature_cyc.filter(r=>r._3.contains(","+uxip_boot_users_cycle+","))
+    val imei_onehotfeature_cyc_filter0 = imei_onehotfeature_cyc.filter(r => r._3.contains("," + uxip_boot_users_cycle + ","))
     //filter user
     val imei_onehotfeature_cyc_filter1 = imei_onehotfeature_cyc_filter0.filter(r => r._2.sum > feature_num)
     println(sdf_time.format(new Date((System.currentTimeMillis()))) + "***********************imei_onehotfeature_cyc_filter1=" + imei_onehotfeature_cyc_filter1.count() + "*****************************")
@@ -136,7 +137,7 @@ object generate_feature_onehot_filter {
     val candidate_df = hiveContext.createDataFrame(candidate_rdd, structType)
     val create_table_sql: String = "create table if not exists " + table_out + " ( imei bigint,feature string,uxip_boot_users_cycle string ) partitioned by (stat_date bigint) stored as textfile"
     val c1 = Calendar.getInstance()
-//        c1.add(Calendar.DATE, -1)
+    //        c1.add(Calendar.DATE, -1)
     val sdf1 = new SimpleDateFormat("yyyyMMdd")
     val date1 = sdf1.format(c1.getTime())
     val insertInto_table_sql: String = "insert overwrite table " + table_out + " partition(stat_date = " + date1 + ") select * from "
@@ -158,7 +159,7 @@ object generate_feature_onehot_filter {
       "uxip_boot_users_cycle " +
       "from user_profile.idl_fdt_dw_tag"
     val df = hiveContext.sql(sql_1)
-    println("***********************load_data finished*****************************")
+    println("***********************load_data finished" + df.count() + "*****************************")
 
     val data_rdd1 = df.map(r => (r.getLong(0), r.getString(1), r.getString(2).toInt, r.getString(3).toInt, r.getString(4).toInt, r.getString(5).toInt, r.getString(6).toInt, r.getString(7).toInt,
       r.getString(8).split(","), r.getString(9).split(","), r.getString(10).split(","), r.getString(11).split(","), r.getString(12).split(","), r.getString(13).split(","), r.getString(14).split(","),
@@ -217,9 +218,112 @@ object generate_feature_onehot_filter {
 
     }
     )
+    println("***********************feature_rdd finished" + feature_rdd.count() + "*****************************")
     feature_rdd
 
   }
 
+  def load_data_new(): RDD[(Long, Array[Int], String)] = {
+    val sql_1 = "select imei, sex, marriage_status, is_parent, mz_apps_car_owner, mz_apps_car_new_owner,mz_apps_car_old_owner,user_job, user_age, " +
+      "user_life_city_lev, " +
+      "app_contact_tag, app_education_tag, app_finance_tag, app_games_tag, app_health_tag, app_interact_tag, app_music_tag, " +
+      "app_o2o_tag, app_read_tag, app_shopping_tag, app_travel_tag,  app_video_tag, " +
+      "fcate_qc," +
+      "uxip_boot_users_cycle " +
+      "from user_profile.idl_fdt_dw_tag"
+    //近3天活跃用户
+    val df = hiveContext.sql(sql_1)
+
+    val data_rdd1 = df.map(r => (r.getLong(0), r.getString(1), r.getString(2).toInt, r.getString(3).toInt, r.getString(4).toInt, r.getString(5).toInt, r.getString(6).toInt, r.getString(7).toInt, r.getString(8).toInt,
+      r.getString(9).toInt,
+      r.getString(10).split(",") ++ r.getString(11).split(",") ++ r.getString(12).split(",") ++ r.getString(13).split(",") ++ r.getString(14).split(",") ++ r.getString(15).split(",") ++ r.getString(16).split(",") ++
+        r.getString(17).split(",") ++ r.getString(18).split(",") ++ r.getString(19).split(",") ++ r.getString(20).split(",") ++ r.getString(21).split(","),
+      r.getString(22).split(","),
+      r.getString(23)
+    ))
+    //兴趣爱好是
+    df.repartition(400)
+    val data_rdd2 = data_rdd1.mapPartitions(iter => for (r <- iter) yield
+      (r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8, r._9, r._10, r._11.toSet
+        .filter(r => (!r.equals("") && !r.equals("-999"))).toArray, r._12.filter(r => (!r.equals("") && !r.equals("-111"))), r._13)
+    ).cache()
+    println("***********************load_data finished" + data_rdd2.count() + "*****************************")
+    val r11 = data_rdd2.flatMap(r => r._11).distinct.collect.zipWithIndex.toMap
+    val r12 = data_rdd2.flatMap(r => r._12).distinct.collect.zipWithIndex.toMap
+    val r11_br = sc.broadcast(r11)
+    val r12_br = sc.broadcast(r12)
+    //sex*2,marr*2,pare*2,car*2,job*10, age*5, city*6
+    val feature_rdd = data_rdd2.mapPartitions(iter => for (r <- iter) yield {
+      var sex = new Array[Int](2)
+      if ("male".equals(r._2)) {
+        sex(0) = 1
+      } else if ("female".equals(r._2)) {
+        sex(1) = 1
+      }
+      var marr = new Array[Int](2)
+      if (r._3 == 2) {
+        marr(0) = 1
+      } else if (r._3 == 1) {
+        marr(1) = 1
+      }
+      var pare = new Array[Int](2)
+      if (r._4 == 2) {
+        pare(0) = 1
+      } else if (r._4 == 1) {
+        pare(1) = 1
+      }
+      var car = new Array[Int](2)
+      if (r._5 == 1) {
+        car(0) = 1
+      } else if (r._5 == 0) {
+        car(1) = 1
+      }
+      val newcar = new Array[Int](2)
+      if (r._6 == 1) {
+        newcar(0) = 1
+      } else {
+        newcar(1) = 1
+      }
+      val oldcar = new Array[Int](2)
+      if (r._7 == 1) {
+        oldcar(0) = 1
+      } else {
+        oldcar(1) = 1
+      }
+      var job = new Array[Int](10)
+      if (r._8 >= 0 && r._8 <= 9) {
+        job(r._8.toInt) = 1
+      }
+      var age = new Array[Int](5)
+      if (r._9 >= 0 && r._9 <= 4) {
+        age(r._9.toInt) = 1
+      }
+      var city = new Array[Int](6)
+      if (r._10 >= 1 && r._10 <= 6) {
+        city(r._10.toInt - 1) = 1
+      }
+
+      val array1 = sex ++ marr ++ pare ++ car ++ newcar ++ oldcar ++ job ++ age ++ city
+      val r11 = r11_br.value
+      val array2 = new Array[Int](r11.values.max + 1)
+      for (key <- r._11) {
+        array2(r11(key)) = 1
+      }
+      val fcate_qc = r._12
+      val r12 = r12_br.value
+      var fcate_qc_array = new Array[Int](r12.values.max + 1)
+      for (key <- fcate_qc) {
+        val i = r12_br.value(key)
+        fcate_qc_array(i) = 1
+      }
+
+      (r._1, array1 ++ array2 ++ fcate_qc_array, r._13)
+
+    }
+    )
+    println("***********************feature_rdd finished" + feature_rdd.count() + "*****************************")
+    feature_rdd
+
+  }
 
 }
